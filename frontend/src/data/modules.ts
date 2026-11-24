@@ -244,6 +244,38 @@ export const MODULES: ModuleMeta[] = [
     actionTargets: {"发布模板": "已发布", "标记异常": "格式异常", "停用模板": "已停用"},
     metrics: ["模板总数", "已发布模板", "格式异常数"],
   },
+  {
+    key: "procurement_audit",
+    name: "连续异常补审",
+    entity: "补审清单",
+    desc: "按有效日排序实际采购观测，判定连续异常并核对异常日期，给出补审清单。",
+    fields: ["清单编号", "采购序列", "观察批次", "有效观测数", "异常日期", "连续异常组", "补审金额", "清单状态"],
+    statuses: ["待检测", "已检测", "已核对", "已归档"],
+    actions: ["重算清单", "核对日期", "归档清单"],
+    actionTargets: {"重算清单": "已检测", "核对日期": "已核对", "归档清单": "已归档"},
+    metrics: ["清单总数", "已检测清单", "已归档清单"],
+    observationInput: true,
+    basisOptions: [
+      { value: "taken_ledger", label: "按领走的原日账出单" },
+      { value: "finance_correction", label: "本期计入财务更正" },
+    ],
+  },
+  {
+    key: "expense_report",
+    name: "费用补审报告",
+    entity: "费用报告",
+    desc: "依据连续异常补审清单选出需补审的采购记录，指标聚合金额并按采用日期重算。",
+    fields: ["报告编号", "补审清单", "观察批次", "出单依据", "实际异常日期", "补审采购记录", "补审金额", "报告状态"],
+    statuses: ["待聚合", "已聚合", "已签发", "已作废"],
+    actions: ["重算金额", "确认签发", "作废报告"],
+    actionTargets: {"重算金额": "已聚合", "确认签发": "已签发", "作废报告": "已作废"},
+    metrics: ["报告总数", "已聚合报告", "已作废报告"],
+    observationInput: true,
+    basisOptions: [
+      { value: "taken_ledger", label: "按领走的原日账出单" },
+      { value: "finance_correction", label: "本期计入财务更正" },
+    ],
+  },
 ]
 
 export const MODULE_BY_KEY: Map<string, ModuleMeta> = new Map(

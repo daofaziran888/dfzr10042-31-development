@@ -1,6 +1,6 @@
 """洞察工坊 · 跨模块分析管道
 
-实现 10 条关键跨模块数据流：
+实现 11 条关键跨模块数据流：
 1. metric_def -> olap_query -> query_cache -> dashboard_def
 2. dimension_def -> drill_path -> olap_query
 3. event_track -> segment_builder -> user_segment
@@ -11,6 +11,7 @@
 8. olap_query -> data_export -> data_snapshot
 9. dataset_join -> olap_query -> report_builder
 10. ranking_board -> metric_def
+11. procurement_audit -> expense_report -> metric_def
 
 所有管道函数都是确定性纯函数，可直接用于测试。
 """
@@ -41,9 +42,18 @@ from app.models import (
     OlapQuery,
     QueryCache,
     RankingBoard,
+    ReportBasis,
     ReportTemplate,
     Segment,
     UserSegmentCompare,
+)
+from app.reaudit import (
+    DEFAULT_ZSCORE_THRESHOLD,
+    MIN_CONSECUTIVE_DAYS,
+    ExpenseReauditReport,
+    build_consecutive_anomaly_audit_list,
+    build_observation_batch,
+    procurement_amount_metric,
 )
 
 
@@ -651,6 +661,61 @@ def pipeline_ranking_to_metric(
 
 
 # ============================================================
+# 流 11: procurement_audit -> expense_report -> metric_def
+# 连续异常补审清单 -> 费用补审报告 -> 指标聚合
+# ============================================================
+
+def pipeline_reaudit_to_expense_report(
+    submissions: list[dict[str, Any]],
+    *,
+    threshold: float = DEFAULT_ZSCORE_THRESHOLD,
+    min_consecutive_days: int = MIN_CONSECUTIVE_DAYS,
+    report_basis: ReportBasis | str = ReportBasis.TAKEN_LEDGER,
+    batch_id: str = "BATCH-REAUDIT",
+) -> dict[str, Any]:
+    """采购补审的完整管道。
+
+    1. 按有效日排序、去重后构建观察批次
+    2. 检测异常并生成连续异常补审清单
+    3. 按报告采用日期关联原采购记录，用指标聚合算金额
+    """
+    batch = build_observation_batch(batch_id, submissions, basis=report_basis)
+    audit = build_consecutive_anomaly_audit_list(
+        batch, threshold=threshold, min_consecutive_days=min_consecutive_days,
+    )
+    report = ExpenseReauditReport(
+        report_id=f"RPT-{batch_id}",
+        batch=batch,
+        audit_list=audit,
+        basis=batch.basis,
+        metric=procurement_amount_metric(),
+    )
+    report_data = report.compute()
+    return {
+        "pipeline": "procurement_audit -> expense_report -> metric_def",
+        "batch_id": batch.batch_id,
+        "basis": batch.basis.value,
+        "threshold": threshold,
+        "observation_count": batch.record_count,
+        "superseded_count": len(batch.superseded),
+        "anomaly_dates": report_data["anomaly_dates"],
+        "groups": [
+            {
+                "dates": group["dates"],
+                "days": group["days"],
+                "eligible": group["eligible"],
+                "amount": group["amount"],
+            }
+            for group in report_data["consecutive_groups"]
+        ],
+        "reaudit_records": report_data["reaudit_records"],
+        "reaudit_amount": report_data["reaudit_amount"],
+        "metric_id": report_data["metric_id"],
+        "report": report_data,
+    }
+
+
+# ============================================================
 # 全量跨模块集成管道
 # ============================================================
 
@@ -734,6 +799,14 @@ def run_full_analysis_pipeline(
     if ranking_boards:
         all_results["flow10_ranking"] = pipeline_ranking_to_metric(
             ranking_boards, sample_data.get("ranking_data", {})
+        )
+
+    # 流 11
+    if sample_data.get("procurement_submissions"):
+        all_results["flow11_reaudit"] = pipeline_reaudit_to_expense_report(
+            sample_data["procurement_submissions"],
+            threshold=sample_data.get("reaudit_threshold", DEFAULT_ZSCORE_THRESHOLD),
+            report_basis=sample_data.get("reaudit_basis", ReportBasis.TAKEN_LEDGER),
         )
 
     return all_results

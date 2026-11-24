@@ -24,6 +24,8 @@ from app.services.ranking_board import RankingBoardService
 from app.services.funnel_def import FunnelDefService
 from app.services.dataset_join import DatasetJoinService
 from app.services.report_builder import ReportBuilderService
+from app.services.procurement_audit import ProcurementAuditService
+from app.services.expense_report import ExpenseReportService
 
 SERVICES: dict[str, BaseModuleService] = {
     "metric_def": MetricDefService(),
@@ -48,6 +50,8 @@ SERVICES: dict[str, BaseModuleService] = {
     "funnel_def": FunnelDefService(),
     "dataset_join": DatasetJoinService(),
     "report_builder": ReportBuilderService(),
+    "procurement_audit": ProcurementAuditService(),
+    "expense_report": ExpenseReportService(),
 }
 
 

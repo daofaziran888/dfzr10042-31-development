@@ -77,6 +77,25 @@
           <span>{{ field }}</span>
           <input v-model="createValues[field]" :data-testid="`create-${field}`" required />
         </label>
+        <template v-if="meta.observationInput">
+          <label class="create-field">
+            <span>观察记录（JSON：record_id / day / amount / source）</span>
+            <textarea
+              v-model="observationsText"
+              data-testid="create-observations"
+              rows="6"
+              placeholder='[{"day":"2026-09-09","amount":100}]'
+            />
+          </label>
+          <label class="create-field">
+            <span>出单依据</span>
+            <select v-model="basisValue" data-testid="create-basis">
+              <option v-for="item in meta.basisOptions" :key="item.value" :value="item.value">
+                {{ item.label }}
+              </option>
+            </select>
+          </label>
+        </template>
         <div class="page-actions">
           <button class="btn" type="button" @click="showCreate = false">取消</button>
           <button class="btn primary" data-testid="submit-create" type="submit" :disabled="creating">
@@ -115,6 +134,8 @@ const filterFields = meta.fields.slice(0, 3)
 const showCreate = ref(false)
 const creating = ref(false)
 const createValues = ref<Record<string, string>>({})
+const observationsText = ref('')
+const basisValue = ref(meta.basisOptions?.[0]?.value ?? 'taken_ledger')
 const stats = computed(() => [
   { label: meta.metrics[0], value: total.value },
   { label: meta.metrics[1], value: rows.value.filter((row) => row.status === meta.statuses[1]).length },
@@ -146,6 +167,8 @@ async function exportRows() {
 
 function openCreate() {
   createValues.value = Object.fromEntries(meta.fields.map((field) => [field, '']))
+  observationsText.value = ''
+  basisValue.value = meta.basisOptions?.[0]?.value ?? 'taken_ledger'
   errorMessage.value = ''
   showCreate.value = true
 }
@@ -154,7 +177,19 @@ async function submitCreate() {
   creating.value = true
   errorMessage.value = ''
   try {
-    const result = await createEntry(meta.key, createValues.value)
+    const values: Record<string, string> = { ...createValues.value }
+    if (meta.observationInput) {
+      let observations: unknown
+      try {
+        observations = observationsText.value.trim() ? JSON.parse(observationsText.value) : []
+      } catch {
+        throw new Error('观察记录不是合法的 JSON 数组')
+      }
+      if (!Array.isArray(observations)) throw new Error('观察记录必须是 JSON 数组')
+      values['观察记录'] = JSON.stringify(observations)
+      values['出单依据'] = basisValue.value
+    }
+    const result = await createEntry(meta.key, values)
     if (!result.ok) throw new Error(result.message)
     showCreate.value = false
     await reload()

@@ -3,6 +3,24 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.reaudit import DEFAULT_ZSCORE_THRESHOLD, MIN_CONSECUTIVE_DAYS
+
+# 连续异常补审的演示序列：前八天各 10 元，第九天 100 元，第十天 10 元。
+# 最后一条是复核员领走日账后、签发前登记的财务更正（末日改为 100 元）。
+_PROCUREMENT_SERIES = (
+    {"record_id": "PROC-R001", "day": "2026-09-01", "amount": 10.0, "source": "ledger"},
+    {"record_id": "PROC-R002", "day": "2026-09-02", "amount": 10.0, "source": "ledger"},
+    {"record_id": "PROC-R003", "day": "2026-09-03", "amount": 10.0, "source": "ledger"},
+    {"record_id": "PROC-R004", "day": "2026-09-04", "amount": 10.0, "source": "ledger"},
+    {"record_id": "PROC-R005", "day": "2026-09-05", "amount": 10.0, "source": "ledger"},
+    {"record_id": "PROC-R006", "day": "2026-09-06", "amount": 10.0, "source": "ledger"},
+    {"record_id": "PROC-R007", "day": "2026-09-07", "amount": 10.0, "source": "ledger"},
+    {"record_id": "PROC-R008", "day": "2026-09-08", "amount": 10.0, "source": "ledger"},
+    {"record_id": "PROC-R009", "day": "2026-09-09", "amount": 100.0, "source": "ledger"},
+    {"record_id": "PROC-R010", "day": "2026-09-10", "amount": 10.0, "source": "ledger"},
+    {"record_id": "PROC-C010", "day": "2026-09-10", "amount": 100.0, "source": "correction"},
+)
+
 SEED_ROWS: dict[str, list[dict[str, Any]]] = {
     "metric_def": [{'id': 1,
   'status': '草稿',
@@ -795,5 +813,146 @@ SEED_ROWS: dict[str, list[dict[str, Any]]] = {
   '生成周期': '报告生成样例3',
   '推送渠道': '报告生成样例3',
   '最近生成': '报告生成样例3',
-  '模板状态': '报告生成样例3'}]
+  '模板状态': '报告生成样例3'}],
+    "procurement_audit": [{'id': 1,
+  'status': '已检测',
+  'pending': True,
+  'abnormal': True,
+  '清单编号': 'PROC-0001',
+  '采购序列': '采购序列·九月上旬',
+  '观察批次': 'BATCH-PROC-0001'},
+ {'id': 2,
+  'status': '已核对',
+  'pending': True,
+  'abnormal': False,
+  '清单编号': 'PROC-0002',
+  '采购序列': '采购序列·九月上旬（计入财务更正）',
+  '观察批次': 'BATCH-PROC-0002'},
+ {'id': 3,
+  'status': '待检测',
+  'pending': True,
+  'abnormal': False,
+  '清单编号': 'PROC-0003',
+  '采购序列': '采购序列·中间缺一天',
+  '观察批次': 'BATCH-PROC-0003'},
+ {'id': 4,
+  'status': '待检测',
+  'pending': True,
+  'abnormal': False,
+  '清单编号': 'PROC-0004',
+  '采购序列': '采购序列·缺一天导致不连续',
+  '观察批次': 'BATCH-PROC-0004'}],
+    "expense_report": [{'id': 1,
+  'status': '已聚合',
+  'pending': True,
+  'abnormal': True,
+  '报告编号': 'EXPR-0001',
+  '补审清单': 'PROC-0001',
+  '观察批次': 'BATCH-PROC-0001',
+  '出单依据': 'taken_ledger'},
+ {'id': 2,
+  'status': '已签发',
+  'pending': False,
+  'abnormal': False,
+  '报告编号': 'EXPR-0002',
+  '补审清单': 'PROC-0002',
+  '观察批次': 'BATCH-PROC-0002',
+  '出单依据': 'finance_correction'},
+ {'id': 3,
+  'status': '待聚合',
+  'pending': True,
+  'abnormal': False,
+  '报告编号': 'EXPR-0003',
+  '补审清单': 'PROC-0003',
+  '观察批次': 'BATCH-PROC-0003',
+  '出单依据': 'taken_ledger'},
+ {'id': 4,
+  'status': '待聚合',
+  'pending': True,
+  'abnormal': False,
+  '报告编号': 'EXPR-0004',
+  '补审清单': 'PROC-0004',
+  '观察批次': 'BATCH-PROC-0004',
+  '出单依据': 'taken_ledger'}]
 }
+
+
+def _build_reaudit_seed() -> None:
+    """写入演示观察记录，并把派生字段算好落回示例行。"""
+    ledger_only = [
+        dict(record) for record in _PROCUREMENT_SERIES
+        if record["source"] == "ledger"
+    ]
+    with_correction = [dict(record) for record in _PROCUREMENT_SERIES]
+    # 中间缺一天：去掉 09-06，末尾两天仍相邻。
+    with_gap = [
+        dict(record) for record in ledger_only
+        if record["day"] != "2026-09-06"
+    ]
+    # 缺一天导致不连续：09-08 缺失，09-07 与 09-09 之间不构成连续两天。
+    non_consecutive = [
+        dict(record)
+        for index, record in enumerate(_PROCUREMENT_SERIES)
+        if index != 7 and record["source"] == "ledger"
+    ]
+    non_consecutive[6]["amount"] = 100.0  # 09-07 异常
+    non_consecutive[7]["amount"] = 100.0  # 09-09 异常
+    observation_sets = {
+        "BATCH-PROC-0001": ledger_only,
+        "BATCH-PROC-0002": with_correction,
+        "BATCH-PROC-0003": with_gap,
+        "BATCH-PROC-0004": non_consecutive,
+    }
+    basis_by_batch = {
+        "BATCH-PROC-0001": "taken_ledger",
+        "BATCH-PROC-0002": "finance_correction",
+        "BATCH-PROC-0003": "taken_ledger",
+        "BATCH-PROC-0004": "taken_ledger",
+    }
+    for module in ("procurement_audit", "expense_report"):
+        for row in SEED_ROWS[module]:
+            row["_observations"] = [
+                dict(record) for record in observation_sets[row["观察批次"]]
+            ]
+            row["_basis"] = basis_by_batch[row["观察批次"]]
+            row["_threshold"] = DEFAULT_ZSCORE_THRESHOLD
+            row["_min_days"] = MIN_CONSECUTIVE_DAYS
+
+    # 派生字段用纯领域函数计算，不依赖服务层，避免 seed/store 循环导入。
+    from app.models import ReportBasis
+    from app.reaudit import (
+        audit_row_fields,
+        build_consecutive_anomaly_audit_list,
+        build_observation_batch,
+        report_row_fields,
+        ExpenseReauditReport,
+        procurement_amount_metric,
+    )
+
+    for row in SEED_ROWS["procurement_audit"]:
+        batch = build_observation_batch(
+            row["观察批次"], row["_observations"], basis=row["_basis"],
+        )
+        audit = build_consecutive_anomaly_audit_list(batch, list_id=row["清单编号"])
+        row.update(audit_row_fields(audit))
+        row["清单状态"] = row["status"]
+    for row in SEED_ROWS["expense_report"]:
+        basis = ReportBasis(row["_basis"])
+        batch = build_observation_batch(
+            row["观察批次"], row["_observations"], basis=basis,
+        )
+        audit = build_consecutive_anomaly_audit_list(batch, list_id=row["补审清单"])
+        report = ExpenseReauditReport(
+            report_id=row["报告编号"],
+            batch=batch,
+            audit_list=audit,
+            basis=basis,
+            metric=procurement_amount_metric(),
+        )
+        row.update(report_row_fields(report.compute()))
+        row["报告状态"] = row["status"]
+
+
+_build_reaudit_seed()
+
+

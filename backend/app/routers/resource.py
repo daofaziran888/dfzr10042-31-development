@@ -82,6 +82,19 @@ def get_entry(module: str, entry_id: int) -> dict[str, Any]:
     return entry
 
 
+@router.get("/{module}/{entry_id}/detail", response_model=dict)
+def get_entry_detail(module: str, entry_id: int) -> dict[str, Any]:
+    """领域明细：补审清单返回异常日期分组，费用报告返回补审记录与金额。"""
+    service = require_service(module)
+    detail = getattr(service, "detail", None)
+    if detail is None:
+        raise HTTPException(status_code=404, detail=f"{module} 不支持明细查询")
+    payload = detail(entry_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail=f"{service.ENTITY} {entry_id} 不存在或已归档")
+    return payload
+
+
 @router.post("/{module}", response_model=ActionResult)
 def create_entry(module: str, payload: EntryPayload) -> ActionResult:
     service = require_service(module)

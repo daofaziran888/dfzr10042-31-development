@@ -37,6 +37,7 @@ from app.analysis_pipeline import (
     pipeline_metric_to_dashboard,
     pipeline_query_to_snapshot,
     pipeline_ranking_to_metric,
+    pipeline_reaudit_to_expense_report,
     pipeline_segment_to_cohort,
     run_full_analysis_pipeline,
 )
@@ -707,6 +708,79 @@ class TestFlow10RankingMetric:
 
 
 # ============================================================
+# 流 11: procurement_audit -> expense_report -> metric_def
+# ============================================================
+
+class TestFlow11ReauditExpense:
+    START = "2026-09-01"
+
+    @staticmethod
+    def _series(amounts, corrections=()):
+        from datetime import date, timedelta
+        start = date(2026, 9, 1)
+        rows = [
+            {"record_id": f"R{index + 1:03d}",
+             "day": start + timedelta(days=index),
+             "amount": amount}
+            for index, amount in enumerate(amounts)
+        ]
+        rows.extend(corrections)
+        return rows
+
+    def test_isolated_ninth_day_reports_zero(self):
+        rows = self._series([10.0] * 8 + [100.0, 10.0])
+        result = pipeline_reaudit_to_expense_report(rows)
+        assert result["pipeline"] == "procurement_audit -> expense_report -> metric_def"
+        assert result["anomaly_dates"] == ["2026-09-09"]
+        assert result["groups"][0]["eligible"] is False
+        assert result["reaudit_amount"] == 0.0
+        assert result["reaudit_records"] == []
+
+    def test_finance_correction_tail_becomes_eligible(self):
+        correction = {
+            "record_id": "C010", "day": "2026-09-10",
+            "amount": 100.0, "source": "correction",
+        }
+        rows = self._series([10.0] * 8 + [100.0, 10.0], [correction])
+        ledger = pipeline_reaudit_to_expense_report(rows)
+        corrected = pipeline_reaudit_to_expense_report(
+            rows, report_basis="finance_correction",
+        )
+        assert ledger["reaudit_amount"] == 0.0
+        assert corrected["anomaly_dates"] == ["2026-09-09", "2026-09-10"]
+        assert corrected["reaudit_amount"] == 200.0
+        assert [r["record_id"] for r in corrected["reaudit_records"]] == ["R009", "C010"]
+
+    def test_duplicate_day_is_collapsed(self):
+        rows = self._series([10.0] * 8 + [100.0, 100.0])
+        rows.append({"record_id": "DUP", "day": "2026-09-10", "amount": 100.0})
+        result = pipeline_reaudit_to_expense_report(rows)
+        assert result["observation_count"] == 10
+        assert result["superseded_count"] == 1
+        assert result["reaudit_amount"] == 200.0
+
+    def test_gap_breaks_consecutive_group(self):
+        # 09-08 与 09-10 异常，中间 09-09 缺失：日期差两天，不能凑成连续两天。
+        rows = self._series([
+            10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 100.0, 10.0, 100.0,
+        ])
+        del rows[8]  # 去掉 09-09
+        result = pipeline_reaudit_to_expense_report(rows)
+        assert result["anomaly_dates"] == ["2026-09-08", "2026-09-10"]
+        assert [group["dates"] for group in result["groups"]] == [
+            ["2026-09-08"], ["2026-09-10"],
+        ]
+        assert result["reaudit_amount"] == 0.0
+
+    def test_pipeline_is_deterministic(self):
+        rows = self._series([10.0] * 8 + [100.0, 100.0])
+        assert (
+            pipeline_reaudit_to_expense_report(rows)
+            == pipeline_reaudit_to_expense_report(rows)
+        )
+
+
+# ============================================================
 # 全量管道测试
 # ============================================================
 
@@ -715,6 +789,9 @@ class TestFullPipeline:
                             sample_experiments, sample_attribution_models,
                             sample_anomaly_rules, sample_segments, sample_ranking_boards,
                             sample_joins, sample_report_templates, sample_data):
+        sample_data["procurement_submissions"] = TestFlow11ReauditExpense._series(
+            [10.0] * 8 + [100.0, 100.0]
+        )
         result = run_full_analysis_pipeline(
             metrics=sample_metrics,
             dimensions=sample_dimensions,
@@ -737,6 +814,8 @@ class TestFullPipeline:
         assert "flow7_anomaly" in result
         assert "flow9_report" in result
         assert "flow10_ranking" in result
+        assert "flow11_reaudit" in result
+        assert result["flow11_reaudit"]["reaudit_amount"] == 200.0
 
     def test_full_pipeline_is_deterministic(self, sample_metrics, sample_dimensions, sample_events,
                                             sample_experiments, sample_attribution_models,

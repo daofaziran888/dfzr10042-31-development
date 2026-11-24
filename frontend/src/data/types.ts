@@ -18,6 +18,9 @@ export type ModuleMeta = {
   actions: string[]
   actionTargets: Record<string, string>
   metrics: string[]
+  /** 需要按有效日提交观察记录的模块，登记时额外提供 JSON 输入与出单依据。 */
+  observationInput?: boolean
+  basisOptions?: { value: string; label: string }[]
 }
 
 export type PageResult = {
